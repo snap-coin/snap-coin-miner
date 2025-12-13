@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Ice"]
 description = "A miner for the Snap Coin cryptocurrency network"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.100"
