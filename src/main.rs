@@ -8,7 +8,7 @@ use snap_coin::{
     api::client::Client,
     blockchain_data_provider::BlockchainDataProvider,
     build_block,
-    core::{block::Block, difficulty::calculate_block_difficulty},
+    core::{block::{Block, MAX_TRANSACTIONS}, difficulty::calculate_block_difficulty},
     crypto::{ARGON2_CONFIG, Hash, keys::Public},
     economics::GENESIS_PREVIOUS_BLOCK_HASH,
 };
@@ -108,8 +108,9 @@ fn mine_thread(
 }
 
 async fn get_current_block(client: &Client, miner: Public) -> Result<Block, UtilError> {
-    let mempool = client.get_mempool().await?;
-    build_block(client, &mempool, miner).await
+    let full_mempool = client.get_mempool().await?;
+    let mempool = snap_coin::core::utils::slice_vec(&full_mempool, 0, MAX_TRANSACTIONS);
+    build_block(client, &mempool.to_vec(), miner).await
 }
 
 fn start_block_refresh(
