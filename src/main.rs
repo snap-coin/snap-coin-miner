@@ -8,17 +8,14 @@ use snap_coin::{
     api::client::Client,
     blockchain_data_provider::BlockchainDataProvider,
     build_block,
-    core::{block::{Block, MAX_TRANSACTIONS}, difficulty::calculate_block_difficulty},
+    core::{
+        block::{Block, MAX_TRANSACTIONS},
+        difficulty::calculate_block_difficulty,
+    },
     crypto::{ARGON2_CONFIG, Hash, keys::Public},
-    economics::GENESIS_PREVIOUS_BLOCK_HASH,
 };
 use std::{
-    env::args,
-    fs::{self, File},
-    io::Write,
-    sync::{Arc, RwLock},
-    thread,
-    time::Duration,
+    env::args, fs::{self, File}, io::Write, sync::{Arc, RwLock}, thread, time::Duration
 };
 
 const BATCH_SIZE: u64 = 20;
@@ -71,7 +68,7 @@ fn mine_thread(
             };
 
             if trial_hash <= local_difficulty {
-                trial_block.hash = Some(Hash::new(&buf));
+                trial_block.meta.hash = Some(Hash::new(&buf));
 
                 // Recheck difficulty before submit
                 let submit_difficulty = { difficulty.read().unwrap().clone() };
@@ -84,7 +81,7 @@ fn mine_thread(
                                 println!(
                                     "[Thread {}] Block submitted: {}, took: {}s",
                                     thread_id,
-                                    trial_block.hash.unwrap().dump_base36(),
+                                    trial_block.meta.hash.unwrap().dump_base36(),
                                     now - *last_block_time.read().unwrap()
                                 );
                                 *last_block_time.write().unwrap() = now;
@@ -190,14 +187,13 @@ async fn main() -> Result<(), anyhow::Error> {
         .build()?;
 
     let node_address: String = settings.get("node.address")?;
-    let private_key_base36: String = settings.get("miner.public")?;
+    let public_key_base36: String = settings.get("miner.public")?;
     let thread_count: i32 = settings.get("threads.count")?;
 
-    let miner_pub = Public::new_from_base36(&private_key_base36).expect("Invalid public key");
+    let miner_pub = Public::new_from_base36(&public_key_base36).expect("Invalid public key");
     let client = Arc::new(Client::connect(node_address.parse().unwrap()).await?);
 
-    let initial_block =
-        Block::new_block_now(vec![], &[0u8; 32], &[0u8; 32], GENESIS_PREVIOUS_BLOCK_HASH);
+    let initial_block = get_current_block(&client, miner_pub).await?;
     let block_ref = Arc::new(RwLock::new(initial_block));
     let difficulty: Difficulty = Arc::new(RwLock::new(BigUint::from(0u32)));
     let hashes_counter = Arc::new(RwLock::new(0u64));
