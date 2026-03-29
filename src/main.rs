@@ -77,7 +77,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Load configuration
     let settings = Config::builder()
-        .add_source(config::File::with_name("miner.toml"))
+        .add_source(config::File::with_name(config_path))
         .build()?;
 
     let node_address: SocketAddr = settings
