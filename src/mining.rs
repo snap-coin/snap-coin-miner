@@ -216,3 +216,174 @@ impl MiningThread {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use snap_coin::{
+        core::{
+            block::{Block, BlockMetadata},
+            difficulty::calculate_block_difficulty,
+        },
+        crypto::{Hash, address_inclusion_filter::AddressInclusionFilter, merkle_tree::MerkleTree},
+    };
+
+    fn empty_block(nonce: u64, timestamp: u64, pow_difficulty: [u8; 32]) -> Block {
+        Block {
+            transactions: vec![],
+            timestamp,
+            nonce,
+            meta: BlockMetadata {
+                block_pow_difficulty: pow_difficulty,
+                tx_pow_difficulty: [0xff; 32],
+                previous_block: Hash::new_from_buf([0xab; 32]),
+                hash: None,
+                merkle_tree_root: MerkleTree::build(&[]).root_hash(),
+                address_inclusion_filter: AddressInclusionFilter::create_filter(&[]).unwrap(),
+            },
+        }
+    }
+
+    fn compute_hash(block: &mut Block) -> Hash {
+        let buf = block.get_hashing_buf().unwrap();
+        let h = Hash::new(&buf);
+        block.meta.hash = Some(h);
+        h
+    }
+
+    /// Returns true if hash satisfies difficulty (hash numerically <= target).
+    fn satisfies_difficulty(target: Hash, hash: Hash) -> bool {
+        target.dump_buf() > hash.dump_buf()
+    }
+
+    // ── nonce / hash sanity ───────────────────────────────────────────────────
+
+    #[test]
+    fn different_nonces_produce_different_hashes() {
+        let mut b1 = empty_block(1_000, 1_750_000_000, [0xff; 32]);
+        let mut b2 = empty_block(1_001, 1_750_000_000, [0xff; 32]);
+        assert_ne!(
+            compute_hash(&mut b1).dump_buf(),
+            compute_hash(&mut b2).dump_buf()
+        );
+    }
+
+    #[test]
+    fn hashing_is_deterministic() {
+        let mut block = empty_block(42, 1_750_000_000, [0xff; 32]);
+        let h1 = compute_hash(&mut block);
+        block.meta.hash = None;
+        let h2 = compute_hash(&mut block);
+        assert_eq!(h1.dump_buf(), h2.dump_buf());
+    }
+
+    // ── known-answer tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn known_hash_nonce_100_ts_1750000000() {
+        let mut block = empty_block(100, 1_750_000_000, [0xff; 32]);
+        let hash = compute_hash(&mut block);
+
+        let expected: [u8; 32] = [
+            34, 50, 13, 159, 125, 143, 41, 165, 139, 200, 26, 14, 239, 200, 22, 130, 5, 155, 34,
+            175, 143, 245, 137, 207, 134, 215, 197, 112, 75, 246, 68, 14,
+        ];
+        assert_eq!(hash.dump_buf(), expected, "hash mismatch for nonce=100");
+    }
+
+    #[test]
+    fn known_hash_nonce_999999_ts_1750000000() {
+        let mut block = empty_block(999_999, 1_750_000_000, [0xff; 32]);
+        let hash = compute_hash(&mut block);
+
+        let expected: [u8; 32] = [
+            37, 34, 231, 61, 235, 126, 128, 12, 46, 187, 102, 183, 18, 90, 129, 56, 7, 152, 114,
+            170, 166, 127, 101, 112, 117, 59, 87, 131, 204, 92, 119, 218,
+        ];
+        assert_eq!(hash.dump_buf(), expected, "hash mismatch for nonce=999999");
+    }
+
+    // ── validate_block_hash round-trip ────────────────────────────────────────
+
+    #[test]
+    fn validate_block_hash_accepts_correct_hash() {
+        let mut block = empty_block(1, 1_750_000_000, [0xff; 32]);
+        compute_hash(&mut block);
+        assert!(block.validate_block_hash().is_ok());
+    }
+
+    #[test]
+    fn validate_block_hash_rejects_tampered_hash() {
+        let mut block = empty_block(1, 1_750_000_000, [0xff; 32]);
+        compute_hash(&mut block);
+
+        let mut raw = block.meta.hash.unwrap().dump_buf();
+        raw[0] ^= 0xff;
+        block.meta.hash = Some(Hash::new_from_buf(raw));
+
+        assert!(block.validate_block_hash().is_err());
+    }
+
+    // ── difficulty comparisons ────────────────────────────────────────────────
+
+    #[test]
+    fn max_difficulty_never_satisfied_for_first_100_nonces() {
+        let pow = [0x00; 32]; // all-zero target: nothing can be <= this
+        let mut block = empty_block(0, 1_750_000_000, pow);
+        let target = calculate_block_difficulty(&block.meta.block_pow_difficulty, 0);
+
+        for nonce in 0u64..100 {
+            block.nonce = nonce;
+            block.meta.hash = None;
+            let hash = compute_hash(&mut block);
+            assert!(
+                !satisfies_difficulty(Hash::new_from_buf(target), hash),
+                "nonce {nonce} unexpectedly satisfied an impossible difficulty"
+            );
+        }
+    }
+
+    #[test]
+    fn min_difficulty_always_satisfied() {
+        let pow = [0xff; 32]; // all-ones target: every hash passes
+        let mut block = empty_block(0, 1_750_000_000, pow);
+        let target = calculate_block_difficulty(&block.meta.block_pow_difficulty, 0);
+        let hash = compute_hash(&mut block);
+
+        assert!(
+            satisfies_difficulty(Hash::new_from_buf(target), hash),
+            "expected any hash to satisfy all-0xff difficulty"
+        );
+    }
+
+    // ── merkle + filter stability ─────────────────────────────────────────────
+
+    #[test]
+    fn empty_block_merkle_and_filter_are_stable() {
+        let block = empty_block(7, 1_750_000_000, [0x80; 32]);
+        assert!(block.validate_merkle_tree().is_ok());
+        assert!(block.validate_address_inclusion_filter().is_ok());
+    }
+
+    // ── validate_difficulties ─────────────────────────────────────────────────
+
+    #[test]
+    fn validate_difficulties_accepts_matching_difficulties() {
+        let pow = [0xff; 32];
+        let tx_pow = [0xff; 32];
+        let mut block = empty_block(0, 1_750_000_000, pow);
+        compute_hash(&mut block);
+
+        assert!(block.validate_difficulties(&pow, &tx_pow).is_ok());
+    }
+
+    #[test]
+    fn validate_difficulties_rejects_wrong_difficulty() {
+        let pow = [0xff; 32];
+        let tx_pow = [0xff; 32];
+        let mut block = empty_block(0, 1_750_000_000, pow);
+        compute_hash(&mut block);
+
+        let wrong_pow = [0x80; 32];
+        assert!(block.validate_difficulties(&wrong_pow, &tx_pow).is_err());
+    }
+}
